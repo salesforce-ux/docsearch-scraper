@@ -24,8 +24,9 @@ class DocumentationSpider(CrawlSpider, SitemapSpider):
     """
     DocumentationSpider
     """
-    http_user = os.environ.get('DOCSEARCH_BASICAUTH_USERNAME', None)
-    http_pass = os.environ.get('DOCSEARCH_BASICAUTH_PASSWORD', None)
+    http_user = os.environ.get('BASIC_AUTH_USERNAME', None)
+    http_pass = os.environ.get('BASIC_AUTH_PASSWORD', None)
+
     algolia_helper = None
     strategy = None
     js_render = False
@@ -81,6 +82,8 @@ class DocumentationSpider(CrawlSpider, SitemapSpider):
         self.nb_hits_max = config.nb_hits_max
         super(DocumentationSpider, self).__init__(*args, **kwargs)
 
+        process_value = self.process_url
+
         # Get rid of scheme consideration
         # Start_urls must stays authentic URL in order to be reached, we build agnostic scheme regex based on those URL
         start_urls_any_scheme = [DocumentationSpider.to_any_scheme(start_url)
@@ -90,7 +93,8 @@ class DocumentationSpider(CrawlSpider, SitemapSpider):
             deny=self.stop_urls,
             tags=('a', 'area', 'iframe'),
             attrs=('href', 'src'),
-            canonicalize=(not config.js_render or not config.use_anchors)
+            canonicalize=(not config.js_render or not config.use_anchors),
+            process_value=process_value
         )
 
         DocumentationSpider.rules = [
@@ -121,28 +125,25 @@ class DocumentationSpider(CrawlSpider, SitemapSpider):
         # END _init_ part from SitemapSpider
         super(DocumentationSpider, self)._compile_rules()
 
-    def start_requests(self):
-        # We crawl according to the sitemap
-        for url in self.sitemap_urls:
-            yield Request(url, callback=self._parse_sitemap,
-                          meta={
-                              "alternative_links": DocumentationSpider.to_other_scheme(
-                                  url)
-                          },
-                          errback=self.errback_alternative_link)
-        # Redirection is neither an error (4XX status) nor a success (2XX) if dont_redirect=False, thus we force it
+    #append basic auth params to end of each url for crawling
+    def process_url(self, x):
+        if '?' in x:
+            return None
+        if '#' in x:
+            return None
+        if '.mp4' in x:
+            return None
+        if not x.endswith('/'):
+            x = x + '/'
+        return x + '?auth=basic'
 
-        # We crawl the start URL in order to ensure we didn't miss anything (Even if we used the sitemap)
+    def start_requests(self):
         for url in self.start_urls:
-            yield Request(url,
-                          callback=self.parse_from_start_url if self.scrape_start_urls else self.parse,
-                          # If we wan't to crawl (default behavior) without scraping, we still need to let the
-                          # crawling spider acknowledge the content by parsing it with the built-in method
-                          meta={
-                              "alternative_links": DocumentationSpider.to_other_scheme(
-                                  url)
-                          },
-                          errback=self.errback_alternative_link)
+            mod_url = url + '?auth=basic' 
+            yield Request(mod_url,
+                          callback=self.parse,
+                          meta={'dont_redirect': True},
+                          dont_filter=False)
 
     def add_records(self, response, from_sitemap):
         records = self.strategy.get_records_from_response(response)
@@ -158,22 +159,12 @@ class DocumentationSpider(CrawlSpider, SitemapSpider):
             raise ValueError(self.reason_to_stop)
             exit(EXIT_CODE_EXCEEDED_RECORDS)
 
-    def parse_from_sitemap(self, response):
-        if self.reason_to_stop is not None:
-            raise CloseSpider(reason=self.reason_to_stop)
-
-        if (not self.force_sitemap_urls_crawling) and (
-                not self.is_rules_compliant(response)):
-            print("\033[94m> Ignored from sitemap:\033[0m " + response.url)
-        else:
-            self.add_records(response, from_sitemap=True)
-            # We don't return self.parse(response) in order to avoid crawling those web page
-
     def parse_from_start_url(self, response):
         if self.reason_to_stop is not None:
             raise CloseSpider(reason=self.reason_to_stop)
 
         if self.is_rules_compliant(response):
+            response = response.replace(url=response.url.replace("?auth=basic", ""))
             self.add_records(response, from_sitemap=False)
 
         else:
